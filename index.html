@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>BioSign-Pulse: AI Visual Trigger</title>
+    <style>
+        :root { --mars-red: #ff4500; --neon-green: #00ff00; --panel-bg: rgba(5, 5, 5, 0.98); }
+        body { background-color: #000; color: white; font-family: 'Courier New', monospace; margin: 0; display: flex; height: 100vh; overflow: hidden; }
+        
+        #left-panel { width: 22%; border-right: 1px solid #333; padding: 15px; background: var(--panel-bg); }
+        #center-panel { width: 53%; display: flex; flex-direction: column; align-items: center; padding: 10px; border-right: 1px solid #333; }
+        #right-panel { width: 25%; padding: 15px; background: var(--panel-bg); }
+
+        .widget { border: 1px solid #444; margin-bottom: 15px; padding: 12px; background: rgba(15,15,15,0.9); }
+        .widget-title { color: var(--neon-green); font-size: 0.85em; margin-bottom: 10px; border-bottom: 1px solid #444; font-weight: bold; }
+
+        #webcam-container { width: 100%; border: 1px solid #555; background: #000; position: relative; min-height: 350px; display: flex; justify-content: center; overflow: hidden; }
+        canvas { width: 100% !important; height: auto !important; border-radius: 4px; }
+
+        #target-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 2px solid transparent; pointer-events: none; transition: 0.3s; z-index: 5; }
+        .locked { border-color: var(--mars-red) !important; box-shadow: inset 0 0 50px rgba(255, 69, 0, 0.4); }
+
+        #loading-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 10; }
+        .loader-bar { width: 70%; height: 4px; background: #222; margin-top: 10px; overflow: hidden; }
+        .loader-progress { width: 0%; height: 100%; background: var(--neon-green); transition: width 0.1s; }
+
+        .biotic-alert { background: var(--mars-red); color: white; animation: pulse 1s infinite; padding: 8px; font-weight: bold; text-align: center; border-radius: 4px; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        
+        #scan-line { position: absolute; width: 100%; height: 2px; background: rgba(0, 255, 0, 0.5); top: 0; animation: scan 3s linear infinite; }
+        @keyframes scan { from { top: 0; } to { top: 100%; } }
+    </style>
+</head>
+<body onload="initAI()">
+
+    <div id="left-panel">
+        <div class="widget">
+            <div class="widget-title">📍 MISSION STATUS</div>
+            <div id="status-text" style="color: yellow; font-size: 0.9em;">BİYOLOJİK İZ ARANIYOR...</div>
+            <div id="mission-log" style="font-size: 0.7em; color: #888; margin-top: 10px; height: 400px; overflow-y: auto;">
+                <div id="dynamic-logs"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="center-panel">
+        <div id="webcam-container">
+            <div id="scan-line"></div>
+            <div id="target-overlay"></div>
+            <div id="loading-overlay">
+                <div id="load-msg" style="font-size: 1.1em; color: var(--neon-green); font-weight: bold;">POTANSİYEL YAŞAM BELİRTİSİ</div>
+                <div class="loader-bar"><div id="p-bar" class="loader-progress"></div></div>
+                <div id="load-step" style="font-size: 0.7em; margin-top: 8px; color: #aaa;">ORGANİK ANALİZ BAŞLATILIYOR</div>
+            </div>
+        </div>
+        <div id="main-status" style="width: 100%; margin-top: 15px;"></div>
+    </div>
+
+    <div id="right-panel">
+        <div class="widget">
+            <div class="widget-title">🧪 SPEKTROMETRİK ANALİZ</div>
+            <div id="salt-list" style="font-size: 0.85em; color: #555;">[Görüntü onayı bekleniyor]</div>
+        </div>
+        <div class="widget">
+            <div class="widget-title">🧬 YAŞAM SİNYALİ</div>
+            <div id="biotic-result" style="text-align: center; padding: 10px;">--</div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+
+    <script>
+        // Kendi TM linkini buraya yapıştır veya dosyalar VS'deyse "./" bırak
+        const URL = "https://teachablemachine.withgoogle.com/models/HFm6DPy4C/";
+        
+        let model, webcam, maxPredictions;
+        let isActive = false; 
+
+        async function initAI() {
+            try {
+                addLog("Sistem Çevrimiçi. Görsel sensörler senkronize ediliyor.");
+                model = await tmImage.load(URL + "model.json", URL + "metadata.json");
+                maxPredictions = model.getTotalClasses();
+                
+                webcam = new tmImage.Webcam(450, 450, true);
+                await webcam.setup();
+                await webcam.play();
+                
+                window.requestAnimationFrame(loop);
+                document.getElementById("webcam-container").appendChild(webcam.canvas);
+                addLog("Yapay sinir ağı hazır.");
+            } catch (e) {
+                console.error(e);
+                alert("Model yüklenemedi!");
+            }
+        }
+
+        async function loop() {
+            webcam.update();
+            if (!isActive) {
+                await scanForTarget();
+            }
+            window.requestAnimationFrame(loop);
+        }
+
+        async function scanForTarget() {
+            const prediction = await model.predict(webcam.canvas);
+            const detected = prediction.find(p => p.className === "BioSign detected");
+            
+            // Hassasiyeti %90 yaptık
+            if (detected && detected.probability > 0.90) {
+                triggerSequence(detected.className, detected.probability);
+            }
+        }
+
+        function triggerSequence(cls, prob) {
+            isActive = true;
+            document.getElementById("target-overlay").classList.add("locked");
+            document.getElementById("status-text").innerText = "HEDEF KİLİTLENDİ!";
+            document.getElementById("status-text").style.color = "red";
+            document.getElementById("scan-line").style.display = "none";
+            
+            addLog(`DİKKAT: ANOMALİ SAPTANDI - ONAY BEKLENİYOR`);
+            
+            setTimeout(() => {
+                document.getElementById("loading-overlay").style.display = "flex";
+                runCollectionAnim(cls, prob);
+            }, 800);
+        }
+
+        function runCollectionAnim(cls, prob) {
+            let progress = 0;
+            const steps = ["VERİ TOPLANIYOR", "MOLEKÜLER TARAMA", "DNA DİZİLİM KONTROLÜ", "SONUÇLAR İŞLENİYOR"];
+            let interval = setInterval(() => {
+                progress += 2;
+                document.getElementById("p-bar").style.width = progress + "%";
+                document.getElementById("load-step").innerText = steps[Math.floor(progress/26)] || "TARANIYOR...";
+                
+                if (progress >= 100) {
+                    clearInterval(interval);
+                    document.getElementById("loading-overlay").style.display = "none";
+                    finishAnalysis(cls, prob);
+                }
+            }, 50); 
+        }
+
+        function finishAnalysis(cls, prob) {
+            const chemical = { name: "Organik Karbonat / C-H", wave: "2920 cm⁻¹", color: "#FF0000", glow: "Yüksek Yoğunluklu Kırmızı" };
+
+            document.getElementById("salt-list").innerHTML = `
+                <div style="border-left: 3px solid ${chemical.color}; padding-left:10px; margin-bottom:10px;">
+                    <div style="font-size:0.7em; color:#888;">TANIMLANAN BİLEŞEN:</div>
+                    <div style="color:${chemical.color}; font-weight:bold;">${chemical.name}</div>
+                </div>
+                <div>DALGA BOYU: ${chemical.wave}</div>
+                <div style="margin-top:5px;">IŞIMA (GLOW): <span style="color:${chemical.color}">${chemical.glow}</span></div>
+            `;
+
+            document.getElementById("biotic-result").innerHTML = `<div class="biotic-alert">BİYOLOJİK YAŞAM OLASILIĞI: %${(prob*100).toFixed(0)}</div>`;
+
+            document.getElementById("main-status").innerHTML = `
+                <div style="border: 1px solid ${chemical.color}; padding: 10px; background: rgba(0,0,0,0.8); text-align:center;">
+                    <div style="color: ${chemical.color}; font-weight:bold;">🚨 ORGANİK YAŞAM BELİRTİSİ</div>
+                    <div style="font-size: 0.7em;">EŞLEŞME: BIOSIGN ALPHA (${(prob*100).toFixed(1)}%)</div>
+                </div>
+            `;
+            
+            document.getElementById("status-text").innerText = "ANALİZ TAMAMLANDI";
+            document.getElementById("status-text").style.color = "var(--neon-green)";
+            addLog("Spektrometrik veri paketi merkeze iletildi.");
+
+            setTimeout(() => {
+                isActive = false;
+                document.getElementById("target-overlay").classList.remove("locked");
+                document.getElementById("scan-line").style.display = "block";
+                document.getElementById("main-status").innerHTML = "";
+                document.getElementById("status-text").innerText = "BİYOLOJİK İZ ARANIYOR...";
+                document.getElementById("status-text").style.color = "yellow";
+                document.getElementById("salt-list").innerText = "[Görüntü onayı bekleniyor]";
+                document.getElementById("biotic-result").innerText = "--";
+                addLog("Sensörler yeniden kalibre edildi. Yeni tarama başlatılıyor.");
+            }, 5000);
+        }
+
+        function addLog(msg) {
+            const logBox = document.getElementById("dynamic-logs");
+            const entry = document.createElement("div");
+            entry.style.marginBottom = "5px";
+            entry.style.borderBottom = "1px solid #222";
+            entry.innerText = `[${new Date().toLocaleTimeString().slice(0,8)}] ${msg}`;
+            logBox.prepend(entry);
+        }
+    </script>
+</body>
+</html>
